@@ -1,0 +1,382 @@
+// noprotect
+// Mughal Mandala Generator
+// p5.js generative art: every seed produces a unique, reproducible design.
+// Keys: N = next seed, B = previous seed, S = save PNG, J = save metadata JSON
+
+let seed = 1;
+let lastTraits = null;
+let K = 1;
+const LIGHT = 225;               // light comes from the top-left
+const RAD = Math.PI / 180;
+
+const PALETTES = [
+  { name: "Royal Gold",       w: 30, bg: [[24,34,66],[6,8,20]],   main: [232,196,92],  acc: [64,190,180],  soft: [248,240,222], deep: [160,44,66] },
+  { name: "Shalimar Emerald", w: 25, bg: [[16,60,50],[4,16,14]],  main: [236,206,120], acc: [110,214,160], soft: [246,242,228], deep: [200,84,70] },
+  { name: "Lapis Night",      w: 22, bg: [[24,40,120],[4,6,30]],  main: [240,214,140], acc: [110,160,255], soft: [240,236,220], deep: [210,150,60] },
+  { name: "Rose Marble",      w: 15, bg: [[80,30,50],[20,6,16]],  main: [240,200,150], acc: [240,140,160], soft: [252,240,236], deep: [120,40,70] },
+  { name: "Truck Art Neon",   w: 8,  bg: [[50,10,60],[8,2,16]],   main: [255,214,0],   acc: [0,230,210],   soft: [255,255,255], deep: [255,50,130] }
+];
+const SYMS   = [{ n: 6, w: 12 }, { n: 8, w: 40 }, { n: 12, w: 30 }, { n: 16, w: 18 }];
+const MOTIFS = [{ name: "Lotus", w: 42 }, { name: "Arch", w: 38 }, { name: "Star", w: 20 }];
+const WEBS   = [{ name: "Light", m: 2, w: 50 }, { name: "Dense", m: 3, w: 35 }, { name: "Ultra", m: 4, w: 15 }];
+const FINISH = [{ name: "Standard", w: 82 }, { name: "Gold Foil", w: 11 }, { name: "Eclipse", w: 7 }];
+
+// ---------- helpers ----------
+function pick(list) {
+  let total = list.reduce((s, o) => s + o.w, 0);
+  let r = random(total);
+  for (let o of list) { r -= o.w; if (r <= 0) return o; }
+  return list[0];
+}
+function rgba(c, a) { return `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+function shade(c, amt, a = 1) {            // amt > 0 lighter, amt < 0 darker
+  const t = amt < 0 ? 0 : 255, p = Math.abs(amt);
+  const f = (v) => Math.round(v + (t - v) * p);
+  return `rgba(${f(c[0])},${f(c[1])},${f(c[2])},${a})`;
+}
+function C(T, role) { return T.finish === "Gold Foil" ? T.pal.main : T.pal[role]; }
+
+// ---------- shapes (raw canvas paths) ----------
+function motifPath(ctx, kind, len, wid) {
+  ctx.beginPath();
+  if (kind === "Star") {
+    for (let i = 0; i < 12; i++) {
+      const r = i % 2 ? len * 0.22 : len * 0.55, a = 30 * i;
+      const x = len / 2 + r * cos(a), y = r * sin(a);
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    }
+  } else {
+    const pointy = kind === "Arch";
+    for (let a = 0; a <= 180; a += 6) {
+      const x = len * (1 - cos(a)) / 2;
+      const y = wid * sin(a) * (pointy ? 1.2 - x / len : 1);
+      if (a === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    for (let a = 180; a >= 0; a -= 6) {
+      const x = len * (1 - cos(a)) / 2;
+      const y = wid * sin(a) * (pointy ? 1.2 - x / len : 1);
+      ctx.lineTo(x, -y);
+    }
+  }
+  ctx.closePath();
+}
+
+function starPath(ctx, r1, r2, pts) {
+  ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) {
+    const r = i % 2 ? r2 : r1, a = (180 / pts) * i;
+    const x = r * cos(a), y = r * sin(a);
+    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+  }
+  ctx.closePath();
+}
+
+// ---------- 3D helpers ----------
+function emboss(T, pathFn, base, rot, cx, h, lw = 1.4, depth = 4) {
+  const ctx = drawingContext;
+  const ang = LIGHT - rot;
+  const dx = cos(ang) * h, dy = sin(ang) * h;
+  const grad = (stops) => {
+    const g = ctx.createLinearGradient(cx + dx, dy, cx - dx, -dy);
+    stops.forEach(([p, col]) => g.addColorStop(p, col));
+    return g;
+  };
+
+  // 1) metal body + shadow
+  ctx.save();
+  if (T.glow) {
+    ctx.shadowColor = shade(base, 0, 0.9);
+    ctx.shadowBlur = 20 * K;
+  } else {
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur = 10 * K;
+    ctx.shadowOffsetX = depth * K;
+    ctx.shadowOffsetY = depth * 1.4 * K;
+  }
+  pathFn(ctx);
+  ctx.fillStyle = grad([[0, shade(base, 0.7)], [0.5, shade(base, 0)], [1, shade(base, -0.6)]]);
+  ctx.fill();
+  ctx.restore();
+
+  // 2) inner bevel
+  ctx.save();
+  pathFn(ctx);
+  ctx.clip();
+  ctx.strokeStyle = grad([[0, "rgba(255,255,255,0.6)"], [0.5, "rgba(255,255,255,0)"], [1, "rgba(0,0,0,0.5)"]]);
+  ctx.lineWidth = lw * 4;
+  ctx.stroke();
+  ctx.restore();
+
+  // 3) outer edge
+  pathFn(ctx);
+  ctx.strokeStyle = grad([[0, shade(base, 0.85)], [1, shade(base, -0.5)]]);
+  ctx.lineWidth = lw;
+  ctx.stroke();
+}
+
+function bead(x, y, r, base) {
+  const ctx = drawingContext;
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.5)";
+  ctx.shadowBlur = 6 * K;
+  ctx.shadowOffsetX = 2 * K;
+  ctx.shadowOffsetY = 3 * K;
+  const g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.1, x, y, r);
+  g.addColorStop(0, shade(base, 0.9));
+  g.addColorStop(0.4, shade(base, 0.1));
+  g.addColorStop(1, shade(base, -0.65));
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function ring(T, r, w, base) {
+  const ctx = drawingContext;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.shadowColor = "rgba(0,0,0,0.5)";
+  ctx.shadowBlur = 8 * K;
+  ctx.shadowOffsetX = 3 * K;
+  ctx.shadowOffsetY = 4 * K;
+  ctx.strokeStyle = shade(base, -0.35);
+  ctx.lineWidth = w;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.shadowColor = "transparent";
+  ctx.strokeStyle = shade(base, 0);
+  ctx.lineWidth = w * 0.72;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = shade(base, 0.7, 0.9);          // highlight side
+  ctx.lineWidth = w * 0.32;
+  ctx.beginPath(); ctx.arc(0, 0, r - w * 0.12, 150 * RAD, 300 * RAD); ctx.stroke();
+  ctx.strokeStyle = shade(base, -0.65, 0.6);        // shadow side
+  ctx.lineWidth = w * 0.3;
+  ctx.beginPath(); ctx.arc(0, 0, r + w * 0.12, -30 * RAD, 120 * RAD); ctx.stroke();
+  ctx.restore();
+}
+
+// ---------- scene layers ----------
+function drawBackground(T) {
+  const ctx = drawingContext;
+  ctx.save();
+  let g = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, width * 0.75);
+  g.addColorStop(0, rgba(T.pal.bg[0], 1));
+  g.addColorStop(1, rgba(T.pal.bg[1], 1));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, width, height);
+  // grain (fast version)
+  ctx.fillStyle = "rgba(255,255,255,0.05)";
+  for (let i = 0; i < 1500; i++) ctx.fillRect(random(width), random(height), 1.3, 1.3);
+  ctx.fillStyle = "rgba(0,0,0,0.08)";
+  for (let i = 0; i < 1500; i++) ctx.fillRect(random(width), random(height), 1.3, 1.3);
+  // vignette
+  g = ctx.createRadialGradient(width / 2, height / 2, width * 0.35, width / 2, height / 2, width * 0.75);
+  g.addColorStop(0, "rgba(0,0,0,0)");
+  g.addColorStop(1, "rgba(0,0,0,0.55)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, width, height);
+  ctx.restore();
+}
+
+function drawPlate(T) {
+  const ctx = drawingContext;
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.65)";
+  ctx.shadowBlur = 30 * K;
+  ctx.shadowOffsetY = 12 * K;
+  const g = ctx.createRadialGradient(-70, -80, 20, 0, 0, 300);
+  g.addColorStop(0, shade(T.pal.bg[0], 0.25));
+  g.addColorStop(0.6, shade(T.pal.bg[0], -0.1));
+  g.addColorStop(1, shade(T.pal.bg[1], 0.05));
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(0, 0, 292, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawCorners(T) {
+  const main = C(T, "main");
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+    push();
+    translate(sx * 262 - 17, sy * 262);
+    emboss(T, (c) => motifPath(c, "Star", 34, 0), main, 0, 17, 1.2, 3);
+    pop();
+  }
+}
+
+function drawWeb(T) {
+  const ctx = drawingContext;
+  const n = T.sym * T.web.m, R = 200;
+  const ks = [Math.max(1, Math.floor(n * random(0.30, 0.40))), Math.max(1, Math.floor(n * random(0.12, 0.22)))];
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ks.forEach((k, idx) => {
+    ctx.strokeStyle = rgba(idx ? C(T, "main") : C(T, "acc"), idx ? 0.32 : 0.45);
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const a1 = (360 / n) * i, a2 = (360 / n) * (i + k);
+      ctx.moveTo(R * cos(a1), R * sin(a1));
+      ctx.lineTo(R * cos(a2), R * sin(a2));
+    }
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+function drawPetals(T) {
+  const sym = T.sym;
+  const rows = [
+    { r: 118, len: 84, wid: 25, role: "main", off: 0 },
+    { r: 118, len: 50, wid: 14, role: "deep", off: 180 / sym },
+    { r: 150, len: 34, wid: 9,  role: "soft", off: 0 }
+  ];
+  const ctx = drawingContext;
+  for (const row of rows) {
+    const col = C(T, row.role);
+    for (let i = 0; i < sym; i++) {
+      const rot = (360 / sym) * i + row.off;
+      push();
+      rotate(rot);
+      translate(row.r, 0);
+      emboss(T, (c) => motifPath(c, T.motif, row.len, row.wid), col, rot,
+             row.len / 2, Math.max(row.len / 2, row.wid), 1.4, 4);
+      if (T.motif !== "Star") {
+        ctx.save();
+        ctx.lineWidth = 0.9;
+        ctx.strokeStyle = "rgba(0,0,0,0.3)";
+        ctx.beginPath();
+        ctx.moveTo(row.len * 0.12, 0);
+        ctx.lineTo(row.len * 0.7, 0);
+        ctx.stroke();
+        ctx.restore();
+      }
+      pop();
+    }
+  }
+}
+
+function drawArchBand(T) {
+  const kind = T.motif === "Arch" ? "Lotus" : "Arch";
+  const n = T.sym * 2;
+  const col = C(T, "acc");
+  for (let i = 0; i < n; i++) {
+    const rot = (360 / n) * i;
+    push();
+    rotate(rot);
+    translate(208, 0);
+    emboss(T, (c) => motifPath(c, kind, 44, 14), col, rot, 22, 22, 1.2, 3);
+    pop();
+  }
+  for (let i = 0; i < n; i++) {
+    const a = (360 / n) * i + 180 / n;
+    bead(236 * cos(a), 236 * sin(a), 3.2, C(T, "soft"));
+  }
+}
+
+function drawCenter(T) {
+  const n = T.sym;
+  const layers = [
+    { r1: 72, r2: 36, role: "main", rot: 0 },
+    { r1: 56, r2: 28, role: "acc",  rot: 180 / n },
+    { r1: 40, r2: 22, role: "deep", rot: 0 }
+  ];
+  for (const L of layers) {
+    push();
+    rotate(L.rot);
+    emboss(T, (c) => starPath(c, L.r1, L.r2, n), C(T, L.role), L.rot, 0, L.r1, 1.4, 4);
+    pop();
+  }
+  const ctx = drawingContext;
+  if (T.finish === "Eclipse") {
+    ctx.save();
+    ctx.shadowBlur = 24 * K;
+    ctx.shadowColor = rgba(C(T, "main"), 1);
+    noFill();
+    for (let i = 0; i < 6; i++) {
+      stroke(C(T, "main")[0], C(T, "main")[1], C(T, "main")[2], 230 - i * 35);
+      strokeWeight(1.3);
+      circle(0, 0, 38 + i * 5);
+    }
+    ctx.restore();
+    bead(0, 0, 18, [14, 14, 20]);
+  } else {
+    bead(0, 0, 17, C(T, "soft"));
+    bead(0, 0, 8, C(T, "deep"));
+  }
+}
+
+function drawFrame(T) {
+  ring(T, 284, 9, C(T, "main"));
+  ring(T, 262, 3, C(T, "main"));
+  const n = T.sym * 4;
+  for (let i = 0; i < n; i++) {
+    const a = (360 / n) * i;
+    bead(272 * cos(a), 272 * sin(a), i % 2 ? 2.6 : 4.2, C(T, "soft"));
+  }
+}
+
+// ---------- main ----------
+function setup() {
+  createCanvas(1000, 1000);
+  pixelDensity(1);
+  angleMode(DEGREES);
+  noLoop();
+}
+
+function draw() {
+  randomSeed(seed);
+  K = width / 600;
+  const T = {
+    pal: pick(PALETTES),
+    sym: pick(SYMS).n,
+    motif: pick(MOTIFS).name,
+    web: pick(WEBS),
+    finish: pick(FINISH).name,
+    glow: random() < 0.14
+  };
+  lastTraits = T;
+
+  drawBackground(T);
+  translate(width / 2, height / 2);
+  scale(K);
+
+  drawPlate(T);
+  drawCorners(T);
+  drawWeb(T);
+  ring(T, 204, 5, C(T, "main"));
+  drawPetals(T);
+  drawArchBand(T);
+  ring(T, 100, 7, C(T, "main"));
+  drawCenter(T);
+  drawFrame(T);
+
+  console.log(JSON.stringify({
+    seed, palette: T.pal.name, symmetry: T.sym, motif: T.motif,
+    web: T.web.name, finish: T.finish, glow: T.glow
+  }));
+}
+
+function metadata() {
+  const T = lastTraits;
+  return {
+    name: "Mughal Mandala #" + seed,
+    description: "Generative Mughal-inspired geometry, coded in p5.js.",
+    attributes: [
+      { trait_type: "Palette",  value: T.pal.name },
+      { trait_type: "Symmetry", value: T.sym },
+      { trait_type: "Motif",    value: T.motif },
+      { trait_type: "Web",      value: T.web.name },
+      { trait_type: "Finish",   value: T.finish },
+      { trait_type: "Glow",     value: T.glow ? "Yes" : "No" }
+    ]
+  };
+}
+
+function keyPressed() {
+  const id = String(seed).padStart(3, "0");
+  if (key === "n") { seed++; redraw(); }
+  if (key === "b" && seed > 1) { seed--; redraw(); }
+  if (key === "s") saveCanvas("mughal-" + id, "png");
+  if (key === "j") saveJSON(metadata(), "mughal-" + id + ".json");
+}
